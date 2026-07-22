@@ -25,6 +25,7 @@ jobs:
       
       - run:
           name: "Connect Tailscale for SSH"
+          background: true
           command: |
             sleep 5
             tailscale up \
@@ -34,7 +35,7 @@ jobs:
             
             sleep 10
             
-            for i in {1..10}; do
+            for i in {1..15}; do
               if tailscale status | grep -q "100."; then
                 TS_IP=$(tailscale ip -4)
                 echo "==================================="
@@ -42,12 +43,26 @@ jobs:
                 echo "IP: ${TS_IP}"
                 echo "SSH: ssh ci-warp-*"
                 echo "==================================="
-                exit 0
+                break
               fi
               sleep 3
             done
-            echo "[!] Tailscale failed"
-            exit 1
+            
+            # Keep Tailscale connection alive (run in background)
+            while true; do
+              sleep 60
+              tailscale status > /dev/null 2>&1 || break
+            done
+      
+      - run:
+          name: "Verify Tailscale Connection"
+          command: |
+            sleep 5
+            if tailscale status | grep -q "100."; then
+              echo "✅ Tailscale connected: $(tailscale ip -4)"
+            else
+              echo "⚠️ Tailscale not connected (will continue without SSH access)"
+            fi
       
       - run:
           name: "Setup Cloudflare + Tor Hybrid"
