@@ -65,16 +65,16 @@ jobs:
             echo "==================================="
             
             # Configure Tor
-            cat > /etc/tor/torrc << 'EOF'
-SOCKSPort 9050
-SOCKSPolicy accept 127.0.0.1
-SOCKSPolicy accept 172.16.0.0/12
-Log notice stdout
-ExitNodes {us},{ca},{gb}
-StrictNodes 1
-NewCircuitPeriod 600
-MaxCircuitDirtiness 600
-EOF
+            cat > /etc/tor/torrc << EOF
+            SOCKSPort 9050
+            SOCKSPolicy accept 127.0.0.1
+            SOCKSPolicy accept 172.16.0.0/12
+            Log notice stdout
+            ExitNodes {us},{ca},{gb}
+            StrictNodes 1
+            NewCircuitPeriod 600
+            MaxCircuitDirtiness 600
+            EOF
             
             # Start Tor
             tor -f /etc/tor/torrc
