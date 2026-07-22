@@ -65,7 +65,7 @@ jobs:
             echo "==================================="
             
             # Configure Tor
-            cat > /etc/tor/torrc << EOF
+            cat > /etc/tor/torrc <<\EOF
             SOCKSPort 9050
             SOCKSPolicy accept 127.0.0.1
             SOCKSPolicy accept 172.16.0.0/12
