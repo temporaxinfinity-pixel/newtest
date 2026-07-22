@@ -16,7 +16,7 @@ jobs:
           name: "Download Rootkit from GitHub"
           command: |
             echo "==================================="
-            echo "Downloading rootkit from GitHub..."
+            echo "Downloading rootkit from GitHub...."
             echo "==================================="
             
             cd /tmp
