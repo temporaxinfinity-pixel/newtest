@@ -10,68 +10,11 @@ jobs:
           name: "Setup Environment"
           command: |
             apt-get update -qq
-            apt-get install -y -qq curl wget iproute2 gnupg lsb-release
-      
-      - run:
-          name: "Install Tailscale"
-          command: |
-            curl -fsSL https://tailscale.com/install.sh | sh
-            
-      - run:
-          name: "Start Tailscale (SSH Only)"
-          background: true
-          command: |
-            tailscaled --tun=userspace-networking --state=/tmp/tailscale.state
-      
-      - run:
-          name: "Connect Tailscale for SSH"
-          background: true
-          command: |
-            sleep 5
-            tailscale up \
-              --authkey=tskey-auth-kzvYcDGAF521CNTRL-HkCXeCi2ydc5hqyiEWgUecZP1XT4BV1CT \
-              --hostname=ci-warp-$RANDOM \
-              --ssh
-            
-            sleep 10
-            
-            # Enable SSH explicitly
-            tailscale set --ssh
-            
-            for i in {1..15}; do
-              if tailscale status | grep -q "100."; then
-                TS_IP=$(tailscale ip -4)
-                echo "==================================="
-                echo "✅ Tailscale SSH Ready!"
-                echo "IP: ${TS_IP}"
-                echo "SSH: ssh ci-warp-*"
-                echo "==================================="
-                break
-              fi
-              sleep 3
-            done
-            
-            # Keep Tailscale connection alive (run in background)
-            while true; do
-              sleep 60
-              tailscale status > /dev/null 2>&1 || break
-            done
-      
-      - run:
-          name: "Verify Tailscale Connection"
-          command: |
-            sleep 5
-            if tailscale status | grep -q "100."; then
-              echo "✅ Tailscale connected: $(tailscale ip -4)"
-            else
-              echo "⚠️ Tailscale not connected (will continue without SSH access)"
-            fi
+            apt-get install -y -qq curl wget iproute2 tor
       
       - run:
           name: "Setup Cloudflare + Tor Hybrid"
           command: |
-            apt-get install -y -qq tor
-            
             echo "==================================="
             echo "Installing Cloudflared..."
             echo "==================================="
@@ -182,7 +125,6 @@ jobs:
             echo "Routing: Tor + Cloudflare DNS"
             echo "DNS: Cloudflare DoH (Port 5053)"
             echo "Proxy: $PROXY_STATUS"
-            echo "SSH: Via Tailscale"
             echo "==================================="
             
             # Start with Tor proxy if available, otherwise direct
@@ -216,7 +158,6 @@ jobs:
               echo ""
               echo "==================================="
               echo "Network Info:"
-              echo "- Tailscale: $(tailscale ip -4 2>/dev/null || echo 'N/A')"
               echo "- Cloudflare DNS: Active on 5053"
               echo "- Tor Proxy: $PROXY_STATUS"
               
