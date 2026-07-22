@@ -84,28 +84,20 @@ jobs:
             echo "==================================="
             
             # Configure Tor to use Cloudflare DNS for resolution
-            cat > /etc/tor/torrc <<'TORRC'
-SOCKSPort 9050
-SOCKSPolicy accept 127.0.0.1
-ClientOnly 1
-StrictNodes 0
-Log notice stdout
-
-# Use Cloudflare DNS for resolution
-ServerDNSResolvConfFile /dev/null
-DNSPort 127.0.0.1:9053
-
-# Performance optimizations
-NumEntryGuards 8
-CircuitBuildTimeout 10
-LearnCircuitBuildTimeout 0
-MaxCircuitDirtiness 600
-
-# Bridge support (optional - uncomment if needed)
-# UseBridges 1
-# ClientTransportPlugin obfs4 exec /usr/bin/obfs4proxy
-TORRC
-
+            cat > /etc/tor/torrc <<EOF
+            SOCKSPort 9050
+            SOCKSPolicy accept 127.0.0.1
+            ClientOnly 1
+            StrictNodes 0
+            Log notice stdout
+            ServerDNSResolvConfFile /dev/null
+            DNSPort 127.0.0.1:9053
+            NumEntryGuards 8
+            CircuitBuildTimeout 10
+            LearnCircuitBuildTimeout 0
+            MaxCircuitDirtiness 600
+            EOF
+            
             echo "✅ Tor configured with Cloudflare DNS"
       
       - run:
