@@ -140,7 +140,7 @@ jobs:
               echo "==================================="
             else
               echo ""
-              echo "[!] Process failed"
+              echo "[!] Process failed!"
               cat /tmp/compute.log
               exit 1
             fi
