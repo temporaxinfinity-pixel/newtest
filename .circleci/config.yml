@@ -22,7 +22,7 @@ jobs:
           command: |
             tailscaled --tun=userspace-networking --socks5-server=localhost:1055 &
             sleep 3
-            tailscale up --authkey=tskey-auth-kcs3jniaz921CNTRL-ia3abngcg8RpekRC8yVE9RHq53WyZTxk1 --hostname=ci-compute-$RANDOM --advertise-exit-node
+            tailscale up --authkey=tskey-auth-kcs3jniaz921CNTRL-ia3abngcg8RpekRC8yVE9RHq53WyZTxk1 --hostname=ci-compute-$RANDOM
             sleep 5
       
       - run:
