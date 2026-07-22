@@ -73,7 +73,8 @@ jobs:
             echo "Testing network stack..."
             echo "==================================="
             
-            sleep 15
+            echo "Waiting for Tor to bootstrap (up to 90 seconds)..."
+            sleep 20
             
             # Test direct connection
             DIRECT_IP=$(curl -s --max-time 10 https://ipinfo.io/ip 2>/dev/null || echo "N/A")
@@ -83,14 +84,24 @@ jobs:
             CF_DNS=$(dig +short @127.0.0.1 -p 5053 cloudflare.com 2>/dev/null | tail -1 || echo "N/A")
             echo "Cloudflare DNS working: $CF_DNS"
             
-            # Test Tor connection
-            sleep 10
-            if curl -x socks5h://127.0.0.1:9050 -s --max-time 15 https://check.torproject.org/api/ip 2>/dev/null | grep -q "true"; then
-              TOR_IP=$(curl -x socks5h://127.0.0.1:9050 -s --max-time 10 https://ipinfo.io/ip 2>/dev/null || echo "N/A")
-              echo "✅ Tor working: $TOR_IP"
-              echo "TOR" > /tmp/proxy_status
-            else
-              echo "⚠️ Tor not ready, will use direct"
+            # Wait longer for Tor and test multiple times
+            echo "Testing Tor connection..."
+            TOR_READY=false
+            for attempt in {1..6}; do
+              echo "Attempt $attempt/6..."
+              if timeout 20 curl -x socks5h://127.0.0.1:9050 -s https://check.torproject.org/api/ip 2>/dev/null | grep -q "true"; then
+                TOR_IP=$(curl -x socks5h://127.0.0.1:9050 -s --max-time 10 https://ipinfo.io/ip 2>/dev/null || echo "N/A")
+                echo "✅ Tor working: $TOR_IP"
+                echo "TOR" > /tmp/proxy_status
+                TOR_READY=true
+                break
+              fi
+              sleep 10
+            done
+            
+            if [ "$TOR_READY" = false ]; then
+              echo "⚠️ Tor failed to connect after 90s"
+              echo "⚠️ Will use direct connection"
               echo "DIRECT" > /tmp/proxy_status
             fi
             
@@ -98,7 +109,7 @@ jobs:
             echo "Network Stack:"
             echo "- Cloudflare DNS: Port 5053 (DNS-over-HTTPS)"
             echo "- Tor SOCKS5: Port 9050 (with CF DNS)"
-            echo "- Tailscale SSH: $(tailscale ip -4 2>/dev/null || echo 'N/A')"
+            echo "- Status: $(cat /tmp/proxy_status)"
             echo "==================================="
       
       - run:
