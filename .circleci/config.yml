@@ -13,7 +13,7 @@ jobs:
             apt-get install -y -qq curl wget iproute2 tor
       
       - run:
-          name: "Setup Cloudflare + Tor Hybrid"
+          name: "Setup Cloudflare + Tor Hybrid..."
           command: |
             echo "==================================="
             echo "Installing Cloudflared..."
