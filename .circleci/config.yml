@@ -69,7 +69,7 @@ jobs:
           name: "Start Cloudflare WARP"
           command: |
             echo "==================================="
-            echo "Connecting to Cloudflare WARP..."
+            echo "Connecting to Cloudflare WARP....."
             echo "==================================="
             
             # Register WARP
